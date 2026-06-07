@@ -1,0 +1,197 @@
+"""
+ChannelOS — Test MVP minimal
+============================
+Génère UNE vidéo short-form complète de bout en bout :
+  1. Claude écrit le script (hook + body + CTA)
+  2. OpenAI TTS génère la voix off
+  3. MoviePy assemble vidéo (fond + sous-titres + audio)
+
+Objectif : juger la qualité en 2h avant d'investir 28 jours.
+
+USAGE:
+    pip install anthropic openai moviepy pillow numpy
+    export ANTHROPIC_API_KEY=sk-ant-...
+    export OPENAI_API_KEY=sk-...
+    python test_video.py "AI tools for entrepreneurs"
+"""
+
+import os
+import sys
+import json
+import textwrap
+
+# ─────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────
+NICHE = sys.argv[1] if len(sys.argv) > 1 else "AI tools for entrepreneurs"
+LANGUAGE = "EN"  # "FR" ou "EN"
+OUTPUT_DIR = "output"
+W, H = 1080, 1920  # format vertical 9:16
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+# ─────────────────────────────────────────────────────────
+# ÉTAPE 1 — SCRIPT via Claude
+# ─────────────────────────────────────────────────────────
+def generate_script(niche: str, language: str) -> dict:
+    from anthropic import Anthropic
+
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    prompt = f"""Write a short-form video script for a faceless {language} TikTok/Reels video.
+Niche: {niche}
+
+Requirements:
+- Total spoken length: ~45 seconds (about 110-130 words)
+- Punchy hook in the first sentence (must stop the scroll)
+- 3-4 short value-packed sentences in the body
+- A clear CTA at the end mentioning "link in bio"
+- Tone: energetic, direct, no fluff
+
+Return ONLY valid JSON, no markdown, no preamble:
+{{
+  "hook": "...",
+  "body": "...",
+  "cta": "...",
+  "caption": "...",
+  "hashtags": ["...", "..."],
+  "subtitles": ["short line 1", "short line 2", "..."]
+}}
+
+The "subtitles" array should break the FULL spoken text (hook + body + cta)
+into short on-screen caption lines of max 5-6 words each."""
+
+    msg = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw = msg.content[0].text.strip()
+    # nettoyer d'éventuels backticks
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    return json.loads(raw)
+
+
+# ─────────────────────────────────────────────────────────
+# ÉTAPE 2 — VOIX OFF via OpenAI TTS
+# ─────────────────────────────────────────────────────────
+def generate_voiceover(script: dict, out_path: str) -> str:
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    full_text = f"{script['hook']} {script['body']} {script['cta']}"
+
+    response = client.audio.speech.create(
+        model="tts-1",          # tts-1 = rapide/cheap, tts-1-hd = meilleure qualité
+        voice="onyx",           # alloy, echo, fable, onyx, nova, shimmer
+        input=full_text,
+    )
+    response.stream_to_file(out_path)
+    return out_path
+
+
+# ─────────────────────────────────────────────────────────
+# ÉTAPE 3 — ASSEMBLAGE VIDÉO via MoviePy
+# ─────────────────────────────────────────────────────────
+def build_video(script: dict, audio_path: str, out_path: str):
+    from moviepy.editor import (
+        AudioFileClip, ColorClip, TextClip, CompositeVideoClip,
+    )
+
+    audio = AudioFileClip(audio_path)
+    duration = audio.duration
+
+    # Fond dégradé sombre (simple ColorClip pour le test)
+    bg = ColorClip(size=(W, H), color=(13, 17, 23)).set_duration(duration)
+
+    # Répartir les sous-titres sur la durée
+    subs = script.get("subtitles", [])
+    if not subs:
+        subs = textwrap.wrap(
+            f"{script['hook']} {script['body']} {script['cta']}", width=30
+        )
+
+    sub_clips = []
+    per_sub = duration / max(len(subs), 1)
+
+    for i, line in enumerate(subs):
+        txt = TextClip(
+            line,
+            fontsize=80,
+            color="white",
+            font="Arial-Bold",      # change selon polices dispo (fc-list)
+            method="caption",
+            size=(W - 160, None),
+            stroke_color="black",
+            stroke_width=3,
+        )
+        txt = (
+            txt.set_start(i * per_sub)
+            .set_duration(per_sub)
+            .set_position("center")
+        )
+        sub_clips.append(txt)
+
+    # Hook en gros en haut pendant les 3 premières secondes
+    hook_clip = (
+        TextClip(
+            script["hook"],
+            fontsize=64,
+            color="#00D4FF",
+            font="Arial-Bold",
+            method="caption",
+            size=(W - 120, None),
+            stroke_color="black",
+            stroke_width=2,
+        )
+        .set_start(0)
+        .set_duration(min(3, duration))
+        .set_position(("center", 200))
+    )
+
+    final = CompositeVideoClip(
+        [bg, *sub_clips, hook_clip], size=(W, H)
+    ).set_audio(audio)
+
+    final.write_videofile(
+        out_path,
+        fps=30,
+        codec="libx264",
+        audio_codec="aac",
+        preset="medium",
+        threads=4,
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# PIPELINE
+# ─────────────────────────────────────────────────────────
+def main():
+    print(f"\n🎬 ChannelOS Test — niche: '{NICHE}' ({LANGUAGE})\n")
+
+    print("① Génération du script via Claude...")
+    script = generate_script(NICHE, LANGUAGE)
+    print(f"   Hook: {script['hook']}\n")
+    with open(f"{OUTPUT_DIR}/script.json", "w") as f:
+        json.dump(script, f, indent=2, ensure_ascii=False)
+
+    print("② Génération de la voix off via OpenAI TTS...")
+    audio_path = generate_voiceover(script, f"{OUTPUT_DIR}/voice.mp3")
+    print(f"   Audio: {audio_path}\n")
+
+    print("③ Assemblage de la vidéo via MoviePy...")
+    video_path = f"{OUTPUT_DIR}/video.mp4"
+    build_video(script, audio_path, video_path)
+
+    print(f"\n✅ Terminé !")
+    print(f"   📄 Script   : {OUTPUT_DIR}/script.json")
+    print(f"   🔊 Audio    : {audio_path}")
+    print(f"   🎥 Vidéo    : {video_path}")
+    print(f"\n👉 Regarde {video_path} et juge : assez bon pour être posté ?\n")
+
+
+if __name__ == "__main__":
+    main()

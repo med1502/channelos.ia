@@ -7,7 +7,6 @@ Requires: pip install google-api-python-client
 
 import os
 import re
-import hashlib
 from collections import Counter
 
 from channelos.utils.cache import cache_key, cache_get, cache_set

@@ -1,3 +1,3 @@
-from channelos.config.niches import NICHES, DEFAULT_NICHE, get_niche, list_niches
+from .niches import get_niche, list_niches, DEFAULT_NICHE, NICHES
 
-__all__ = ["NICHES", "DEFAULT_NICHE", "get_niche", "list_niches"]
+__all__ = ["get_niche", "list_niches", "DEFAULT_NICHE", "NICHES"]

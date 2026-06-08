@@ -1,0 +1,20 @@
+# Force LF line endings for all text files — prevents Windows CRLF corruption
+* text=auto eol=lf
+
+# Explicitly LF for Python and config files
+*.py        text eol=lf
+*.md        text eol=lf
+*.sql       text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.txt       text eol=lf
+*.sh        text eol=lf
+Makefile    text eol=lf
+.env*       text eol=lf
+
+# Binary — never touch
+*.mp4       binary
+*.png       binary
+*.jpg       binary

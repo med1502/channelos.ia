@@ -1,29 +1,31 @@
 services:
   db:
-      image: postgres:16
-          container_name: channelos-db
-              environment:
-                    POSTGRES_DB: ${POSTGRES_DB}
-                          POSTGRES_USER: ${POSTGRES_USER}
-                                POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-                                    ports:
-                                          - "${POSTGRES_PORT:-5432}:5432"
-                                              volumes:
-                                                    - pgdata:/var/lib/postgresql/data
-                                                        healthcheck:
-                                                              test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-                                                                    interval: 5s
-                                                                          timeout: 5s
-                                                                                retries: 5
+    image: postgres:16
+    container_name: channelos-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-channelos}
+      POSTGRES_USER: ${POSTGRES_USER:-channelos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-channelos}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-channelos} -d ${POSTGRES_DB:-channelos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-                                                                                  # redis: Planned for TASK-009 (async job queue via Celery).
-                                                                                    # Uncomment when implementing background processing.
-                                                                                      # redis:
-                                                                                        #   image: redis:7-alpine
-                                                                                          #   container_name: channelos-redis
-                                                                                            #   ports:
-                                                                                              #     - "${REDIS_PORT:-6379}:6379"
+  redis:
+    image: redis:7-alpine
+    container_name: channelos-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-                                                                                              volumes:
-                                                                                                pgdata:
-                                                                                                
+volumes:
+  pgdata:

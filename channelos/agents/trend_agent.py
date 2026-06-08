@@ -109,7 +109,7 @@ def generate_ideas(
         n: int,
         niche_profile: dict,
         yt_insights: dict | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], object]:
         """
             Call Claude Sonnet to generate n scored video ideas grounded in real trends.
                 """
@@ -190,7 +190,7 @@ except json.JSONDecodeError as exc:
                         f"Claude returned invalid JSON for ideas. "
                         f"Raw response (first 300 chars): {raw[:300]}"
         ) from exc
-    return sorted(ideas, key=lambda x: x.get("viral_score", 0), reverse=True)
+        return sorted(ideas, key=lambda x: x.get("viral_score", 0), reverse=True), msg
 
 # ── Brand safety ──────────────────────────────────────────────────────────────
 

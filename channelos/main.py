@@ -27,34 +27,29 @@ from channelos.pipeline.render import (
 )
 import channelos.db as db
 
-import itertools
-
 from dotenv import load_dotenv
 load_dotenv()
 
-_channel_cyclers: dict = {}
-
 def _resolve_channel_id(niche_key: str) -> int | None:
-    """Renvoie l'id de chaîne suivant pour ce niche (round-robin).
- 
-    Lit les chaînes du niche dans la table `channels`. Met en cache un
-    itertools.cycle par niche pour alterner entre les 2-3 chaînes.
-    Renvoie None si aucune chaîne configurée (la vidéo est quand même
-    sauvée, juste sans chaîne — à publier manuellement).
-    """
-    cyc = _channel_cyclers.get(niche_key)
-    if cyc is None:
-        with db.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM channels WHERE niche_key=%s ORDER BY id",
-                (niche_key,),
-            )
-            ids = [r[0] for r in cur.fetchall()]
-        if not ids:
-            return None
-        cyc = itertools.cycle(ids)
-        _channel_cyclers[niche_key] = cyc
-    return next(cyc)
+    """Chaîne du niche la moins chargée (équilibrage persistant inter-processus).
+
+    Remplace le round-robin en mémoire: chaque invocation CLI étant un
+    processus neuf, seul un état en DB équilibre réellement les chaînes."""
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id
+            FROM channels c
+            LEFT JOIN videos v ON v.channel_id = c.id
+            WHERE c.niche_key = %s
+            GROUP BY c.id
+            ORDER BY COUNT(v.id) ASC, c.id ASC
+            LIMIT 1
+            """,
+            (niche_key,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -103,6 +98,16 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
         print("✅ Ideas generated (--ideas-only mode).\n")
         return
 
+# ADR-009: filtrer au format de l'expérience (la grille est gelée)
+    if args.format != "any":
+        matching = [i for i in safe if i.get("format") == args.format]
+        if matching:
+            safe = matching
+            print(f"   Filtre format={args.format}: {len(safe)} idée(s) retenue(s)\n")
+        else:
+            print(f"   ⚠️  Aucune idée au format {args.format} — run abandonné "
+                  f"(relancer, ou --format any pour outrepasser)")
+            return
     # ③ Select idea
     pick = max(1, min(args.pick, len(safe)))
     idea = safe[pick - 1]
@@ -143,7 +148,8 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
         broll_url=broll_url,
         hook=idea.get("hook", ""),
         broll_clips=broll_clips,
-        screen_items=script.get("screen_items", []),
+        screen_items=(idea.get("list_items") if fmt == "ranking" and idea.get("list_items")
+                      else script.get("screen_items", [])),
         fmt=fmt,
         voice=voice,
         lang_code=lang_code,
@@ -252,6 +258,9 @@ def main() -> None:
                         help="upload sur YouTube après le render")
     parser.add_argument("--no-render", action="store_true",
                         help="stop après le script + B-roll, zéro crédit render")
+    parser.add_argument("--format", default="ranking",
+                        choices=["ranking", "versus", "single", "any"],
+                        help="ne produire que ce format (ADR-009: ranking pour les 90j)")
     args = parser.parse_args()
 
     niche_profile = get_niche(args.niche_profile)

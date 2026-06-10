@@ -172,6 +172,26 @@ def _chunk_by_sentences(text: str, n_chunks: int) -> list[str]:
 
     return [" ".join(c) for c in chunks]
 
+_VOICE_MARKER_RE = re.compile(
+    r"(?=\b(?:number|no\.?|#)\s*\d\b)", re.IGNORECASE
+)
+
+
+def _chunk_by_voice_markers(text: str, n_chunks: int) -> list[str] | None:
+    """Découpe le script sur les annonces explicites ("Number 5:", "#4"...).
+
+    C'est la frontière VRAIE entre items — la voix et l'écran restent
+    synchrones quelle que soit la longueur de chaque description.
+    Le texte avant le premier marqueur (le hook) est rattaché au premier item.
+    Renvoie None si le compte de marqueurs ne correspond pas (fallback)."""
+    parts = [p for p in _VOICE_MARKER_RE.split(text) if p.strip()]
+    if len(parts) == n_chunks:
+        return [p.strip() for p in parts]
+    if len(parts) == n_chunks + 1:
+        # intro/hook avant le premier "Number 5" → fusionné avec l'item 1
+        merged = [(parts[0] + " " + parts[1]).strip()] + [p.strip() for p in parts[2:]]
+        return merged
+    return None  # marqueurs absents ou incohérents → fallback
 
 # ── Overlays par scène ────────────────────────────────────────────────────────
 
@@ -303,7 +323,8 @@ def render_video(
           f"(fmt={fmt}, clips={len(broll_clips)}, items={len(items)})")
 
     if multi:
-        chunks = _chunk_by_sentences(spoken_text, len(items))
+        chunks = (_chunk_by_voice_markers(spoken_text, len(items))
+                  or _chunk_by_sentences(spoken_text, len(items)))
 
         for idx, (item, chunk) in enumerate(zip(items, chunks)):
             if not chunk.strip():
@@ -311,13 +332,13 @@ def render_video(
             clip = broll_clips[idx % len(broll_clips)]
             rank_num = len(items) - idx  # countdown: 5, 4, 3, 2, 1
             scene_elements: list[dict] = [
-                {"type": "video", "src": clip, "loop": -1, "duration": -1,
+                {"type": "video", "src": clip, "loop": -1, "duration": -2,
                  "x": 0, "y": 0, "width": 1080, "height": 1920,
                  "resize": "cover", "volume": 0},
                 {"type": "html",
                  "html": "<div style='width:1080px;height:1920px;"
                          "background:rgba(0,0,0,0.4);'></div>",
-                 "duration": -1, "x": 0, "y": 0, "width": 1080, "height": 1920},
+                 "duration": -2, "x": 0, "y": 0, "width": 1080, "height": 1920},
                 {"type": "voice", "model": "azure", "voice": _voice,
                  "text": chunk, "duration": -1},
                 _rank_overlay(rank_num),
@@ -377,10 +398,35 @@ def render_video(
     project_id = r.json()["project"]
 
     print("   Rendering", end="", flush=True)
+    poll_errors = 0
+    MAX_POLL_ERRORS = 5
+    POLL_TIMEOUT_TOTAL = 600  # 10 min max — un render de 30s ne doit jamais durer plus
+    t_start = time.time()
+
     while True:
         time.sleep(4)
-        s = requests.get(J2V_URL, headers=headers, params={"project": project_id}, timeout=15)
-        s.raise_for_status()
+        if time.time() - t_start > POLL_TIMEOUT_TOTAL:
+            raise RuntimeError(
+                f"Render polling timeout après {POLL_TIMEOUT_TOTAL}s "
+                f"(project={project_id} — vérifier le dashboard JSON2Video, "
+                f"la vidéo est peut-être terminée côté serveur)"
+            )
+        try:
+            s = requests.get(J2V_URL, headers=headers,
+                             params={"project": project_id}, timeout=15)
+            s.raise_for_status()
+            poll_errors = 0  # reset après un succès
+        except (requests.exceptions.RequestException,) as e:
+            poll_errors += 1
+            if poll_errors >= MAX_POLL_ERRORS:
+                raise RuntimeError(
+                    f"Polling échoué {MAX_POLL_ERRORS}x de suite "
+                    f"(project={project_id}): {e}"
+                ) from e
+            print(f"⚠", end="", flush=True)  # hoquet visible mais non fatal
+            time.sleep(4 * poll_errors)      # backoff: 4s, 8s, 12s, 16s
+            continue
+
         movie = s.json().get("movie", {})
         status = movie.get("status")
         if status == "done":

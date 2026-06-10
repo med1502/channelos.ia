@@ -27,6 +27,35 @@ from channelos.pipeline.render import (
 )
 import channelos.db as db
 
+import itertools
+
+from dotenv import load_dotenv
+load_dotenv()
+
+_channel_cyclers: dict = {}
+
+def _resolve_channel_id(niche_key: str) -> int | None:
+    """Renvoie l'id de chaîne suivant pour ce niche (round-robin).
+ 
+    Lit les chaînes du niche dans la table `channels`. Met en cache un
+    itertools.cycle par niche pour alterner entre les 2-3 chaînes.
+    Renvoie None si aucune chaîne configurée (la vidéo est quand même
+    sauvée, juste sans chaîne — à publier manuellement).
+    """
+    cyc = _channel_cyclers.get(niche_key)
+    if cyc is None:
+        with db.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM channels WHERE niche_key=%s ORDER BY id",
+                (niche_key,),
+            )
+            ids = [r[0] for r in cur.fetchall()]
+        if not ids:
+            return None
+        cyc = itertools.cycle(ids)
+        _channel_cyclers[niche_key] = cyc
+    return next(cyc)
+
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -103,7 +132,10 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
 
     db.log_cost("pexels", "broll", 1, "request", idea_id=idea_id)
     print(f"   {'✓ ' + str(len(broll_clips)) + ' clip(s) found' if broll_clips else '✗ none (solid background)'}\n")
-
+    
+    if args.no_render:
+        print("⏭️  --no-render: pipeline validé jusqu'au B-roll, 0 crédit consommé.\n")
+        return
     # ⑤ Render
     print("⑤ Rendering video (JSON2Video)...")
     video_url, duration = render_video(
@@ -118,13 +150,33 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
     )
     video_path = str(OUTPUT_DIR / "video.mp4")
     download_video(video_url, video_path)
-
-    video_id = db.save_video(idea_id, script, broll_url, video_url, video_path, duration)
+ 
+    # ── Decision context (TCK-03) — stamped at creation, before any publish ──
+    niche_key = niche_profile.get("key", args.niche_profile)
+    hook_pattern = idea.get("hook_pattern", "unknown")   # TODO TCK-11: tag in IdeaGenerator
+    arm = getattr(args, "arm", "baseline")               # TCK-13 will set 'bandit'
+    channel_id_used = getattr(args, "channel_id", None) or _resolve_channel_id(niche_key)
+ 
+    video_id = db.save_video(
+        idea_id,
+        script,
+        broll_url,
+        video_url,
+        video_path,
+        hook_pattern=hook_pattern,
+        format=fmt,
+        niche=niche_key,
+        lang=language,
+        channel_id=channel_id_used,
+        arm=arm,
+        duration=duration,
+    )
     db.log_cost("json2video", "render", duration or 0, "seconds",
                 video_id=video_id, idea_id=idea_id)
-    print(f"   Video saved (id={video_id}, {duration}s)")
-
-    # Output package
+    print(f"   Video saved (id={video_id}, {duration}s, "
+          f"niche={niche_key}, pattern={hook_pattern}, arm={arm})")
+ 
+    # Output package — construit AVANT le publish (qui l'enrichit)
     meta = {
         "title": idea["title"],
         "caption": script.get("caption", ""),
@@ -134,10 +186,24 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
         "viral_score": idea.get("viral_score"),
         "video_url": video_url,
     }
+ 
+    # ⑥ Publish (TCK-06)
+    if args.publish:
+        from channelos.pipeline.publisher import publish
+        if channel_id_used is None:
+            print("⚠️  Aucune chaîne configurée pour ce niche — publish sauté.")
+            print("    Peupler la table channels puis relancer avec --publish.")
+        else:
+            print("⑥ Publishing to YouTube...")
+            yt_video_id = publish(video_id, video_path, meta, channel_id_used)
+            meta["yt_video_id"] = yt_video_id
+            meta["yt_url"] = f"https://youtube.com/shorts/{yt_video_id}"
+ 
+    # Écrit UNE seule fois, après publish — sinon les champs yt_* sont écrasés
     (OUTPUT_DIR / "post_package.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False)
     )
-
+ 
     print(f"\n{'='*60}")
     print("✅ VIDEO READY TO POST")
     print(f"{'='*60}")
@@ -145,7 +211,10 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
     print(f"   📝 {meta['caption']}")
     print(f"   #️⃣  {' '.join(meta['hashtags'])}")
     print(f"   💰 {meta['affiliate_angle']}")
+    if meta.get("yt_url"):
+        print(f"   ▶️  {meta['yt_url']}")
     print(f"   📦 output/post_package.json")
+ 
 
     # Cost for this run
     try:
@@ -179,6 +248,10 @@ def main() -> None:
                         help="video language")
     parser.add_argument("--batch", type=int, default=0,
                         help="generate N videos (ideas 1..N) in one run")
+    parser.add_argument("--publish", action="store_true",
+                        help="upload sur YouTube après le render")
+    parser.add_argument("--no-render", action="store_true",
+                        help="stop après le script + B-roll, zéro crédit render")
     args = parser.parse_args()
 
     niche_profile = get_niche(args.niche_profile)

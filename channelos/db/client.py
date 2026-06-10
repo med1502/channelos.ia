@@ -35,7 +35,7 @@ PRICING = {
 # ── Connection ────────────────────────────────────────────────────────────────
 
 def connect() -> psycopg2.extensions.connection:
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=5)
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -90,15 +90,30 @@ def save_video(
     broll_url: str,
     video_url: str,
     local_path: str,
+    *,
+    hook_pattern: str,
+    format: str,
+    niche: str,
+    lang: str,
+    channel_id: int,
+    arm: str,
     duration: float | None = None,
+    yt_video_id: str | None = None,
 ) -> int:
+    """Persist a produced video WITH the full decision context (TCK-03)."""
+    if arm not in ("bandit", "baseline"):
+        raise ValueError(f"arm must be 'bandit' or 'baseline', got {arm!r}")
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO videos
               (idea_id, spoken_text, caption, hashtags, broll_url,
-               video_url, local_path, duration_sec, status)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'downloaded')
+               video_url, local_path, duration_sec,
+               hook_pattern, format, niche, lang, channel_id, arm,
+               yt_video_id, status)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,
+                    %s,'downloaded')
             RETURNING id
             """,
             (
@@ -110,12 +125,65 @@ def save_video(
                 video_url,
                 local_path,
                 duration,
+                hook_pattern,
+                format,
+                niche,
+                lang,
+                channel_id,
+                arm,
+                yt_video_id,
             ),
         )
         video_id = cur.fetchone()[0]
         cur.execute("UPDATE ideas SET status='produced' WHERE id=%s", (idea_id,))
         conn.commit()
     return video_id
+
+
+def mark_published(video_id: int, yt_video_id: str) -> None:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE videos SET status='published', published_at=NOW(), "
+            "yt_video_id=%s WHERE id=%s",
+            (yt_video_id, video_id),
+        )
+        conn.commit()
+
+
+def save_performance(
+    video_id: int,
+    *,
+    platform: str = "youtube",
+    views: int = 0,
+    likes: int = 0,
+    shares: int = 0,
+    comments: int = 0,
+    retention_pct: float | None = None,
+) -> int:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT hook_pattern, format, niche, lang, arm "
+            "FROM videos WHERE id=%s",
+            (video_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"no video with id={video_id}")
+        hook_pattern, fmt, niche, lang, arm = row
+        cur.execute(
+            """
+            INSERT INTO performance
+              (video_id, platform, views, likes, shares, comments,
+               retention_pct, hook_pattern, format, niche, lang, arm)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+            """,
+            (video_id, platform, views, likes, shares, comments,
+             retention_pct, hook_pattern, fmt, niche, lang, arm),
+        )
+        perf_id = cur.fetchone()[0]
+        conn.commit()
+    return perf_id
 
 
 def log_cost(

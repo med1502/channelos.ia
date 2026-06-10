@@ -1,20 +1,80 @@
 """
-ChannelOS — VideoProducer (render pipeline)
+ChannelOS — VideoProducer (render pipeline) v2
 Fetches B-roll from Pexels and renders via JSON2Video (Azure TTS + subtitles).
 
-TASK-004: fetch_broll_multi() — one clip per ranking item
-TASK-005: visual rank numbers on screen for ranking format
+v2:
+- Render quota guard (protège les crédits JSON2Video, échec bruyant AVANT l'appel)
+- Découpage du script par PHRASES (plus de coupures mi-phrase entre scènes)
+- Overlay nom de l'outil + numéro de rang par scène (le visuel suit le contexte)
+- Log de la branche de rendu choisie (diagnostic vidéos statiques)
 """
 
 import os
+import re
 import time
+from datetime import date
+
 import requests
+
+import channelos.db as db
 
 J2V_URL = "https://api.json2video.com/v2/movies"
 
 # Set by main.py from niche profile + lang arg
 VOICE: str = "en-US-AndrewMultilingualNeural"
 LANG_CODE: str = "en"
+
+# ── Render quota guard ────────────────────────────────────────────────────────
+# 1 crédit ≈ 1 seconde rendue (1080p). Budget quotidien paramétrable.
+# 90 = ~3 vidéos/jour (semaine 1) ; passer à 200 pour 6/jour.
+
+RENDER_BUDGET_SECONDS_PER_DAY = float(os.environ.get("RENDER_BUDGET_SECONDS", 90))
+EXPECTED_VIDEO_SECONDS = 32  # 30s + marge, consommé en estimation avant render
+
+
+def _ensure_render_quota_table() -> None:
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS render_quota (
+                day     DATE PRIMARY KEY,
+                seconds FLOAT NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.commit()
+
+
+def render_quota_remaining() -> float:
+    _ensure_render_quota_table()
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT seconds FROM render_quota WHERE day=%s", (date.today(),))
+        row = cur.fetchone()
+    used = row[0] if row else 0.0
+    return RENDER_BUDGET_SECONDS_PER_DAY - used
+
+
+def _render_quota_check() -> None:
+    remaining = render_quota_remaining()
+    if remaining < EXPECTED_VIDEO_SECONDS:
+        raise RuntimeError(
+            f"Budget de rendu quotidien insuffisant: {remaining:.0f}s restants, "
+            f"~{EXPECTED_VIDEO_SECONDS}s requis "
+            f"(RENDER_BUDGET_SECONDS={RENDER_BUDGET_SECONDS_PER_DAY:.0f}/jour)."
+        )
+
+
+def _render_quota_consume(actual_seconds: float) -> None:
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO render_quota (day, seconds) VALUES (%s, %s)
+            ON CONFLICT (day) DO UPDATE
+              SET seconds = render_quota.seconds + EXCLUDED.seconds
+            """,
+            (date.today(), actual_seconds),
+        )
+        conn.commit()
 
 
 # ── B-roll ────────────────────────────────────────────────────────────────────
@@ -52,10 +112,8 @@ def fetch_broll(query: str) -> str:
 
 
 def fetch_broll_multi(queries: list[str], fallback_query: str, n: int) -> list[str]:
-    """
-    TASK-004: Fetch n distinct B-roll clips.
-    Uses one specific query per ranking item, then fills from fallback_query.
-    """
+    """Fetch n distinct B-roll clips: one specific query per ranking item,
+    then fill from fallback_query."""
     clips: list[str] = []
 
     for q in queries:
@@ -77,13 +135,48 @@ def fetch_broll_multi(queries: list[str], fallback_query: str, n: int) -> list[s
     return clips[:n]
 
 
-# ── Rank number overlay (TASK-005) ────────────────────────────────────────────
+# ── Script chunking (par phrases, plus de coupures mi-phrase) ────────────────
+
+def _split_sentences(text: str) -> list[str]:
+    """Découpe naïve mais robuste sur . ! ? en conservant la ponctuation."""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in parts if p]
+
+
+def _chunk_by_sentences(text: str, n_chunks: int) -> list[str]:
+    """Répartit les phrases en n_chunks consécutifs, équilibrés en mots.
+
+    Garantit n_chunks non vides quand il y a au moins n_chunks phrases ;
+    sinon, répartit ce qu'il y a (les chunks vides héritent d'une phrase
+    du chunk précédent si possible)."""
+    sentences = _split_sentences(text)
+    if not sentences:
+        return [text] + [""] * (n_chunks - 1)
+
+    total_words = sum(len(s.split()) for s in sentences)
+    target = max(1, total_words / n_chunks)
+
+    chunks: list[list[str]] = [[] for _ in range(n_chunks)]
+    i = 0
+    acc = 0
+    for s in sentences:
+        chunks[i].append(s)
+        acc += len(s.split())
+        if acc >= target * (i + 1) and i < n_chunks - 1:
+            i += 1
+
+    # Rééquilibrage: aucun chunk vide si on peut l'éviter
+    for j in range(1, n_chunks):
+        if not chunks[j] and len(chunks[j - 1]) > 1:
+            chunks[j].append(chunks[j - 1].pop())
+
+    return [" ".join(c) for c in chunks]
+
+
+# ── Overlays par scène ────────────────────────────────────────────────────────
 
 def _rank_overlay(number: int) -> dict:
-    """
-    Returns a JSON2Video text element showing the rank number in cyan.
-    E.g. number=3 → "3" bottom-left, #00E5FF, 120px bold.
-    """
+    """Numéro de rang, cyan, bas-gauche."""
     return {
         "type": "text",
         "text": str(number),
@@ -106,6 +199,33 @@ def _rank_overlay(number: int) -> dict:
     }
 
 
+def _item_name_overlay(name: str) -> dict:
+    """Nom de l'outil/item, en haut de l'écran — le visuel suit le contexte."""
+    display = name.strip()
+    if len(display) > 28:
+        display = display[:27] + "…"
+    return {
+        "type": "text",
+        "text": display.upper(),
+        "duration": -2,
+        "position": "custom",
+        "x": 90,
+        "y": 200,
+        "width": 900,
+        "height": 160,
+        "settings": {
+            "font-family": "Roboto",
+            "font-size": "72px",
+            "font-weight": "900",
+            "color": "#FFFFFF",
+            "text-align": "center",
+            "vertical-align": "center",
+            "outline-color": "#000000",
+            "outline-width": 7,
+        },
+    }
+
+
 # ── Video render ──────────────────────────────────────────────────────────────
 
 def render_video(
@@ -119,16 +239,14 @@ def render_video(
     lang_code: str | None = None,
 ) -> tuple[str, float]:
     """
-    Build and render the video via JSON2Video.
-
     Scene 1 (2s)  : giant hook text — scroll-stopper + thumbnail
-    Scene 2 (~28s): B-roll + Azure TTS voice + auto-synced subtitles
-
-    For ranking format: one scene per item with B-roll change (TASK-004)
-    and rank number overlay (TASK-005).
+    Scenes 2..N   : ranking → une scène par item (clip dédié + nom + rang)
+                    sinon  → une scène contenu unique
 
     Returns (video_url, duration_seconds).
     """
+    _render_quota_check()  # échec bruyant AVANT de consommer des crédits
+
     _voice = voice or VOICE
     _lang = lang_code or LANG_CODE
 
@@ -176,24 +294,20 @@ def render_video(
         "elements": intro_elements,
     }
 
-    # ── Scene 2: content ─────────────────────────────────────────────────────
-    # For ranking format with multiple clips: one scene per item (TASK-004/005)
+    # ── Scenes contenu ───────────────────────────────────────────────────────
     content_scenes: list[dict] = []
     items = screen_items or []
 
-    if fmt == "ranking" and len(broll_clips) > 1 and len(items) > 1:
-        # Split spoken_text roughly equally across items
-        words = spoken_text.split()
-        chunk_size = max(1, len(words) // len(items))
-        chunks = [
-            " ".join(words[i * chunk_size: (i + 1) * chunk_size])
-            for i in range(len(items))
-        ]
-        # append any remainder to last chunk
-        if len(words) > chunk_size * len(items):
-            chunks[-1] += " " + " ".join(words[chunk_size * len(items):])
+    multi = fmt == "ranking" and len(broll_clips) > 1 and len(items) > 1
+    print(f"   Render branch: {'MULTI-SCENE' if multi else 'SINGLE-SCENE'} "
+          f"(fmt={fmt}, clips={len(broll_clips)}, items={len(items)})")
+
+    if multi:
+        chunks = _chunk_by_sentences(spoken_text, len(items))
 
         for idx, (item, chunk) in enumerate(zip(items, chunks)):
+            if not chunk.strip():
+                continue
             clip = broll_clips[idx % len(broll_clips)]
             rank_num = len(items) - idx  # countdown: 5, 4, 3, 2, 1
             scene_elements: list[dict] = [
@@ -206,7 +320,8 @@ def render_video(
                  "duration": -1, "x": 0, "y": 0, "width": 1080, "height": 1920},
                 {"type": "voice", "model": "azure", "voice": _voice,
                  "text": chunk, "duration": -1},
-                _rank_overlay(rank_num),  # TASK-005
+                _rank_overlay(rank_num),
+                _item_name_overlay(item),
             ]
             content_scenes.append({
                 "background-color": "#0D1117",
@@ -214,7 +329,6 @@ def render_video(
                 "elements": scene_elements,
             })
     else:
-        # Single content scene (single / versus / ranking without multi-clip)
         content_elements: list[dict] = []
         if first_clip:
             content_elements += [
@@ -271,6 +385,8 @@ def render_video(
         status = movie.get("status")
         if status == "done":
             print(" ✓")
+            duration = movie.get("duration", 0) or EXPECTED_VIDEO_SECONDS
+            _render_quota_consume(duration)
             return movie["url"], movie.get("duration", 0)
         if status == "error":
             raise RuntimeError(f"Render failed: {movie.get('message')}")

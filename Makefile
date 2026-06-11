@@ -28,6 +28,9 @@ ideas:
 batch:
 	$(PYTHON) -m channelos "AI tools for entrepreneurs" --batch 3
 
+collect:
+	python3 -m channelos.pipeline.collect
+
 # ── Database ──────────────────────────────────────────────────────────────────
 db-init:
 	$(PYTHON) -m channelos.db init

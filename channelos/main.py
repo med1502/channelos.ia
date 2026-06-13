@@ -36,20 +36,30 @@ def _resolve_channel_id(niche_key: str) -> int | None:
     Remplace le round-robin en mémoire: chaque invocation CLI étant un
     processus neuf, seul un état en DB équilibre réellement les chaînes."""
     with db.connect() as conn, conn.cursor() as cur:
+        # Chaînes du niche, ordonnées
+        cur.execute("SELECT id FROM channels WHERE niche_key = %s ORDER BY id", (niche_key,))
+        channels = [r[0] for r in cur.fetchall()]
+        if not channels:
+            return None
+        if len(channels) == 1:
+            return channels[0]
+        # Alternance stricte: la chaîne qui n'a PAS reçu la dernière publication
         cur.execute(
             """
-            SELECT c.id
-            FROM channels c
-            LEFT JOIN videos v ON v.channel_id = c.id
-            WHERE c.niche_key = %s
-            GROUP BY c.id
-            ORDER BY COUNT(v.id) ASC, c.id ASC
+            SELECT channel_id FROM videos
+            WHERE status IN ('published', 'scheduled') AND channel_id = ANY(%s)
+            ORDER BY id DESC
             LIMIT 1
             """,
-            (niche_key,),
+            (channels,),
         )
         row = cur.fetchone()
-    return row[0] if row else None
+        last = row[0] if row else None
+        # renvoyer la première chaîne != dernière utilisée (rotation circulaire)
+        if last is None:
+            return channels[0]
+        idx = (channels.index(last) + 1) % len(channels) if last in channels else 0
+        return channels[idx]
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)

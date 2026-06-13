@@ -112,6 +112,13 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
     pick = max(1, min(args.pick, len(safe)))
     idea = safe[pick - 1]
     print(f"③ Selected idea #{pick} — {idea['title']}")
+    if getattr(args, "title", None):
+        if len(args.title) > 92:   # 100 - len(" #Shorts")
+            raise SystemExit(f"❌ Titre trop long ({len(args.title)} car., max 92 avec #Shorts)")
+        idea["title"] = args.title
+        print(f"   Titre forcé: {args.title}")
+
+
 
     idea_id = db.save_idea(idea)
     print(f"   Idea saved (id={idea_id})")
@@ -201,7 +208,18 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
             print("    Peupler la table channels puis relancer avec --publish.")
         else:
             print("⑥ Publishing to YouTube...")
-            yt_video_id = publish(video_id, video_path, meta, channel_id_used)
+            publish_at = None
+            if getattr(args, "schedule", False):
+                from datetime import datetime, timezone
+                from channelos.pipeline.publisher import _next_publish_slot
+                with db.connect() as conn, conn.cursor() as cur:
+                    cur.execute("SELECT MAX(published_at) FROM videos "
+                                "WHERE status IN ('published','scheduled')")
+                    last = cur.fetchone()[0]
+                publish_at = _next_publish_slot(datetime.now(timezone.utc), last)
+                print(f"   📅 Publication programmée: {publish_at.isoformat()}")
+            yt_video_id = publish(video_id, video_path, meta, channel_id_used,
+                                  publish_at=publish_at)
             meta["yt_video_id"] = yt_video_id
             meta["yt_url"] = f"https://youtube.com/shorts/{yt_video_id}"
  
@@ -261,6 +279,10 @@ def main() -> None:
     parser.add_argument("--format", default="ranking",
                         choices=["ranking", "versus", "single", "any"],
                         help="ne produire que ce format (ADR-009: ranking pour les 90j)")
+    parser.add_argument("--title", type=str, default=None,
+                        help="Force le titre de la vidéo (remplace celui de l'idée)")
+    parser.add_argument("--schedule", action="store_true",
+                        help="Publie en différé au prochain créneau optimal (publishAt YouTube)")
     args = parser.parse_args()
 
     niche_profile = get_niche(args.niche_profile)

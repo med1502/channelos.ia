@@ -40,6 +40,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError, ResumableUploadError
 from googleapiclient.http import MediaFileUpload
 
+from datetime import datetime, timedelta, timezone
+
 import channelos.db as db
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -56,6 +58,9 @@ MAX_UPLOADS_PER_DAY = 6          # TCK-05 option A — quota défaut 10 000 u/j
 UPLOAD_COST_UNITS = 1600
 
 CATEGORY_SCIENCE_TECH = "28"     # catégorie YouTube par défaut pour le niche
+
+PUBLISH_SLOTS_UTC = [13, 17, 21]   # heures UTC cibles (audience EN/US)
+MIN_GAP_HOURS = 4                  # espacement minimal entre publications
 
 
 # ── Quota guard (local, en DB) ────────────────────────────────────────────────
@@ -174,12 +179,28 @@ def _build_metadata(meta: dict) -> dict:
         },
     }
 
+def _next_publish_slot(now: datetime, last_published_at: datetime | None) -> datetime:
+    """Prochain créneau optimal: >= now+15min, >= last+MIN_GAP_HOURS,
+    sur une heure de PUBLISH_SLOTS_UTC. Cherche jour par jour."""
+    floor = now + timedelta(minutes=15)            # marge de traitement YouTube
+    if last_published_at is not None:
+        gap = last_published_at + timedelta(hours=MIN_GAP_HOURS)
+        floor = max(floor, gap)
+    day = floor.date()
+    for d in range(0, 8):                          # jusqu'à 7 jours devant
+        for h in PUBLISH_SLOTS_UTC:
+            slot = datetime(day.year, day.month, day.day, h,
+                            tzinfo=timezone.utc) + timedelta(days=d)
+            if slot >= floor:
+                return slot
+    raise RuntimeError("Aucun créneau trouvé sous 7 jours")
 
 def publish(
     video_id: int,
     video_path: str,
     meta: dict,
     channel_id: int,
+    publish_at=None,
 ) -> str:
     """Upload le MP4 sur la chaîne, marque published en DB, renvoie yt_video_id.
 
@@ -199,6 +220,9 @@ def publish(
 
     yt = _youtube_client(channel_id)
     body = _build_metadata(meta)
+    if publish_at is not None:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = publish_at.isoformat().replace("+00:00", "Z")
     media = MediaFileUpload(
         str(path), mimetype="video/mp4", resumable=True, chunksize=4 * 1024 * 1024
     )

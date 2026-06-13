@@ -250,7 +250,7 @@ def publish(
 
     yt_video_id = response["id"]
     _quota_consume()
-    db.mark_published(video_id, yt_video_id)
+    db.mark_published(video_id, yt_video_id, published_at=publish_at)
 
     url = f"https://youtube.com/shorts/{yt_video_id}"
     print(f"✅ Published: {url} (channel {channel_id})")

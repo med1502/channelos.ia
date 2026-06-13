@@ -8,3 +8,4 @@ __all__ = [
     "log_cost", "log_anthropic", "estimate_cost", "show_costs",
 ]
 from .client import mark_published, save_performance
+from .client import get_recent_published_titles, get_used_broll_urls, record_broll_urls

@@ -140,12 +140,15 @@ def save_video(
     return video_id
 
 
-def mark_published(video_id: int, yt_video_id: str) -> None:
+def mark_published(video_id: int, yt_video_id: str,
+                   published_at=None) -> None:
+    """published_at: datetime du créneau programmé (publishAt). None = NOW()."""
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE videos SET status='published', published_at=NOW(), "
+            "UPDATE videos SET status='published', "
+            "published_at=COALESCE(%s, NOW()), "
             "yt_video_id=%s WHERE id=%s",
-            (yt_video_id, video_id),
+            (published_at, yt_video_id, video_id),
         )
         conn.commit()
 
@@ -303,3 +306,36 @@ def cli() -> None:
 
 if __name__ == "__main__":
     cli()
+
+
+# ── Dédup idées & B-roll (migration 003) ─────────────────────────────────────
+
+def get_recent_published_titles(days: int = 14) -> list[str]:
+    """Titres des vidéos published/deleted des N derniers jours (anti-clone)."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT i.title FROM videos v JOIN ideas i ON i.id = v.idea_id "
+            "WHERE v.published_at > NOW() - make_interval(days => %s)",
+            (days,),
+        )
+        return [r[0] for r in cur.fetchall() if r[0]]
+
+
+def get_used_broll_urls(days: int = 30) -> set[str]:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT url FROM used_broll WHERE used_at > NOW() - make_interval(days => %s)",
+            (days,),
+        )
+        return {r[0] for r in cur.fetchall()}
+
+
+def record_broll_urls(urls: list[str], video_id: int | None = None) -> None:
+    with connect() as conn, conn.cursor() as cur:
+        for u in urls:
+            cur.execute(
+                "INSERT INTO used_broll (url, video_id) VALUES (%s, %s) "
+                "ON CONFLICT (url) DO UPDATE SET used_at = NOW()",
+                (u, video_id),
+            )
+        conn.commit()

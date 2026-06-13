@@ -288,3 +288,33 @@ def filter_brand_safety(ideas: list[dict]) -> tuple[list[dict], list[dict]]:
         else:
             safe.append(idea)
     return safe, flagged
+
+# ── Anti-clone: similarité de titres ─────────────────────────────────────────
+
+_STOPWORDS = {"the", "a", "an", "in", "for", "of", "to", "and", "that", "are",
+              "is", "your", "you", "with", "on", "how", "i", "my"}
+
+
+def _title_tokens(title: str) -> set[str]:
+    import re as _re
+    words = _re.findall(r"[a-z0-9$]+", title.lower())
+    return {w for w in words if w not in _STOPWORDS and len(w) > 1}
+
+
+def title_similarity(a: str, b: str) -> float:
+    """Jaccard sur les mots significatifs. 0 = rien en commun, 1 = identiques."""
+    ta, tb = _title_tokens(a), _title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def filter_already_used(ideas: list[dict], recent_titles: list[str],
+                        threshold: float = 0.55) -> tuple[list[dict], list[dict]]:
+    """Écarte les idées trop proches d'un titre déjà publié (14 derniers jours)."""
+    fresh, dupes = [], []
+    for idea in ideas:
+        sim = max((title_similarity(idea.get("title", ""), t)
+                   for t in recent_titles), default=0.0)
+        (dupes if sim >= threshold else fresh).append(idea)
+    return fresh, dupes

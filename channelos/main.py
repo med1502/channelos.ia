@@ -108,6 +108,16 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
             print(f"   ⚠️  Aucune idée au format {args.format} — run abandonné "
                   f"(relancer, ou --format any pour outrepasser)")
             return
+    # Anti-clone: écarter les idées trop proches d'une vidéo récente
+    from channelos.agents.trend_agent import filter_already_used
+    fresh, dupes = filter_already_used(safe, db.get_recent_published_titles())
+    if dupes:
+        print(f"   ♻️  {len(dupes)} idee(s) ecartee(s) (trop proche d'une video recente)")
+    if not fresh:
+        raise SystemExit("❌ Toutes les idees ressemblent a des videos deja publiees. "
+                         "Varie le mot-cle ou attends de nouveaux trends.")
+    safe = fresh
+
     # ③ Select idea
     pick = max(1, min(args.pick, len(safe)))
     idea = safe[pick - 1]
@@ -117,6 +127,11 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
             raise SystemExit(f"❌ Titre trop long ({len(args.title)} car., max 92 avec #Shorts)")
         idea["title"] = args.title
         print(f"   Titre forcé: {args.title}")
+    if getattr(args, "hook", None):
+        if len(args.hook) > 100:
+            raise SystemExit(f"❌ Hook trop long ({len(args.hook)} car., max 100 — frame d'intro)")
+        idea["hook"] = args.hook
+        print(f"   Hook forcé: {args.hook}")
 
 
 
@@ -142,6 +157,14 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
         broll_url = fetch_broll(idea.get("broll_query", args.niche))
         broll_clips = [broll_url] if broll_url else []
 
+    # Anti-répétition B-roll: écarter les clips déjà vus (garder l'original si tout vu)
+    _used = db.get_used_broll_urls()
+    _fresh_clips = [c for c in broll_clips if c not in _used]
+    if _fresh_clips:
+        broll_clips = _fresh_clips
+        broll_url = broll_clips[0]
+    elif broll_clips:
+        print("   ♻️  clips deja vus — reutilisation acceptee (fallback)")
     db.log_cost("pexels", "broll", 1, "request", idea_id=idea_id)
     print(f"   {'✓ ' + str(len(broll_clips)) + ' clip(s) found' if broll_clips else '✗ none (solid background)'}\n")
     
@@ -186,6 +209,7 @@ def run_pipeline(args: argparse.Namespace, niche_profile: dict) -> None:
     )
     db.log_cost("json2video", "render", duration or 0, "seconds",
                 video_id=video_id, idea_id=idea_id)
+    db.record_broll_urls(broll_clips, video_id)
     print(f"   Video saved (id={video_id}, {duration}s, "
           f"niche={niche_key}, pattern={hook_pattern}, arm={arm})")
  
@@ -281,6 +305,8 @@ def main() -> None:
                         help="ne produire que ce format (ADR-009: ranking pour les 90j)")
     parser.add_argument("--title", type=str, default=None,
                         help="Force le titre de la vidéo (remplace celui de l'idée)")
+    parser.add_argument("--hook", type=str, default=None,
+                        help="Force le hook (phrase d'ouverture + frame d'intro)")
     parser.add_argument("--schedule", action="store_true",
                         help="Publie en différé au prochain créneau optimal (publishAt YouTube)")
     args = parser.parse_args()

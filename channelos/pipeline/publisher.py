@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from channelos.config.affiliate_links import build_affiliate_block
 from datetime import date
 from pathlib import Path
 
@@ -159,6 +160,11 @@ def _build_metadata(meta: dict) -> dict:
 
     hashtags = meta.get("hashtags", [])
     description_parts = [meta.get("caption", "").strip()]
+    _aff = build_affiliate_block([
+        meta.get("title", ""), meta.get("caption", ""), meta.get("affiliate_angle", ""),
+    ])
+    if _aff:
+        description_parts.append(_aff)
     if hashtags:
         description_parts.append(" ".join(hashtags))
     description = "\n\n".join(p for p in description_parts if p)[:5000]

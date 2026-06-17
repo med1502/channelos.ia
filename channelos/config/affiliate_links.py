@@ -3,6 +3,8 @@
 AFFILIATE_LINKS = {
     "Make.com": "https://www.make.com/en/register?pc=founderiahub",
     "Make":     "https://www.make.com/en/register?pc=founderiahub",
+    "ElevenLabs": "https://try.elevenlabs.io/ims976bvovkr",
+    "Eleven Labs": "https://try.elevenlabs.io/ims976bvovkr",
 }
 
 AFFILIATE_DISCLOSURE = "Some links above are affiliate links — using them supports the channel at no extra cost to you."

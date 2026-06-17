@@ -53,8 +53,8 @@ IDEA:
 Rules:
 - Open with the EXACT hook provided
 - 55-70 words TOTAL (hard limit — short = higher retention)
-- Lead naturally toward the affiliate angle without being salesy
-- End with a CTA mentioning "link in bio"
+- You may reference relevant tools by name where they genuinely fit the content, but do NOT claim to provide links to them or imply the viewer gets anything free. Real affiliate links are added separately at publish time — your job is honest, useful content, not selling.
+- End with a light, HONEST CTA: either engagement ("follow for a daily AI tool", "which one would you try first?") OR "tools in bio" ONLY as a soft pointer. NEVER invent a freebie that doesn't exist: no "free checklist", "free guide", "free template", "download", "DM me" — these resources do NOT exist and promising them is a false promise. Do not promise to send or link anything specific.
 - Stay factual and brand-safe
 
 Return ONLY valid JSON, no markdown:

@@ -1,7 +1,7 @@
 .PHONY: up down run run-fr ideas batch costs test test-cov db-init install setup-dev clean
 
 PYTHON  = python3
-COMPOSE = docker compose -f channelos/infra/docker-compose.yml
+COMPOSE = docker compose -f infra/docker-compose.yml
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 up:
@@ -40,13 +40,13 @@ costs:
 
 # ── Tests — stdlib unittest, zero pip required ────────────────────────────────
 test:
-	$(PYTHON) -m unittest discover -s channelos/tests -p "test_*.py" -v
+	$(PYTHON) -m unittest discover -s tests -p "test_*.py" -v
 
 test-pytest:
-	$(PYTHON) -m pytest channelos/tests/ -v --tb=short
+	$(PYTHON) -m pytest tests/ -v --tb=short
 
 test-cov:
-	$(PYTHON) -m pytest channelos/tests/ -v --tb=short \
+	$(PYTHON) -m pytest tests/ -v --tb=short \
 	  --cov=channelos --cov-report=term-missing
 
 # ── Dependencies ──────────────────────────────────────────────────────────────

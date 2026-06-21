@@ -30,7 +30,8 @@ class TestRenderVideo(unittest.TestCase):
         post, get = _j2v_mocks()
         with patch("channelos.pipeline.render.requests.post", return_value=post), \
              patch("channelos.pipeline.render.requests.get", return_value=get), \
-             patch("channelos.pipeline.render.time.sleep"):
+             patch("channelos.pipeline.render.time.sleep"), \
+             patch("channelos.pipeline.render._render_quota_check"):
             from channelos.pipeline import render
             return render.render_video(**kwargs)
 
@@ -75,7 +76,8 @@ class TestRenderVideo(unittest.TestCase):
 
         with patch("channelos.pipeline.render.requests.post", side_effect=capture), \
              patch("channelos.pipeline.render.requests.get", return_value=get), \
-             patch("channelos.pipeline.render.time.sleep"):
+             patch("channelos.pipeline.render.time.sleep"), \
+             patch("channelos.pipeline.render._render_quota_check"):
             from channelos.pipeline.render import render_video
             render_video(
                 spoken_text="One tool. Two tool. Three tool best.",

@@ -33,3 +33,9 @@ Thumbs.db
 .idea/
 *.swp
 secrets/
+logs/
+
+# Coverage & tmp
+.coverage
+tmp/
+crontab.backup

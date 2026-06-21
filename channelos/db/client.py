@@ -42,7 +42,7 @@ def connect() -> psycopg2.extensions.connection:
 
 def init_schema(schema_path: str | None = None) -> None:
     if schema_path is None:
-        schema_path = Path(__file__).parent / "schema.sql"
+        schema_path = Path(__file__).parent / "migrations" / "schema.sql"
     with open(schema_path) as f:
         sql = f.read()
     with connect() as conn, conn.cursor() as cur:
